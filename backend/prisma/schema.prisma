@@ -1,0 +1,134 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Users & Auth ────────────────────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  name         String
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  githubAccessToken String?  @map("github_access_token")
+  githubUsername    String?  @map("github_username")
+
+  workspaceMembers  WorkspaceMember[]
+  verifiedIncidents Incident[]        @relation("VerifiedBy")
+
+  @@map("users")
+}
+
+// ─── Workspaces ──────────────────────────────────────────────────────────────
+
+model Workspace {
+  id        String   @id @default(uuid())
+  name      String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  members      WorkspaceMember[]
+  repositories Repository[]
+  incidents    Incident[]
+
+  @@map("workspaces")
+}
+
+model WorkspaceMember {
+  workspaceId String @map("workspace_id")
+  userId      String @map("user_id")
+  role        String @default("MEMBER") // OWNER | ADMIN | MEMBER | VIEWER
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([workspaceId, userId])
+  @@map("workspace_members")
+}
+
+// ─── Repositories ────────────────────────────────────────────────────────────
+
+model Repository {
+  id               String    @id @default(uuid())
+  workspaceId      String    @map("workspace_id")
+  fullName         String    @map("full_name") // "owner/repo"
+  description      String    @default("")
+  githubUrl        String    @map("github_url")
+  status           String    @default("Connected") // Connected | Disconnected | Syncing
+  lastSyncedAt     DateTime? @map("last_synced_at")
+  commitsAnalyzed  Int       @default(0) @map("commits_analyzed")
+  bugFixesDetected Int       @default(0) @map("bug_fixes_detected")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  workspace Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  incidents Incident[]
+
+  @@unique([workspaceId, fullName])
+  @@map("repositories")
+}
+
+// ─── Incidents ───────────────────────────────────────────────────────────────
+
+model Incident {
+  id              String    @id @default(uuid())
+  workspaceId     String    @map("workspace_id")
+  repositoryId    String?   @map("repository_id")
+  title           String
+  category        String    // Authentication | Database | API | CI/CD | Frontend | Infrastructure
+  symptom         String
+  rootCause       String    @map("root_cause")
+  resolution      String
+  status          String    @default("pending_review") // pending_review | verified | rejected
+  confidenceScore Float     @default(0) @map("confidence_score") // 0.0–1.0
+  commitSha       String?   @map("commit_sha")
+  commitMessage   String?   @map("commit_message")
+  pullRequest     String?   @map("pull_request") // "PR #48"
+  githubUrl       String?   @map("github_url")
+  affectedFiles   String[]  @default([]) @map("affected_files")
+  tags            String[]  @default([])
+  verifiedById    String?   @map("verified_by")
+  verifiedAt      DateTime? @map("verified_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  workspace         Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  repository        Repository?        @relation(fields: [repositoryId], references: [id])
+  verifiedBy        User?              @relation("VerifiedBy", fields: [verifiedById], references: [id])
+  evidenceArtifacts EvidenceArtifact[]
+
+  @@map("incidents")
+}
+
+model EvidenceArtifact {
+  id          String  @id @default(uuid())
+  incidentId  String  @map("incident_id")
+  filePath    String  @map("file_path")
+  excerpt     String?
+  lineStart   Int?    @map("line_start")
+  lineEnd     Int?    @map("line_end")
+  externalUrl String? @map("external_url")
+
+  incident Incident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+
+  @@map("evidence_artifacts")
+}
+
+// ─── GitHub Webhook Events ───────────────────────────────────────────────────
+
+model RawWebhookEvent {
+  id         String   @id @default(uuid())
+  deliveryId String   @unique @map("delivery_id")
+  eventType  String   @map("event_type")
+  payload    Json
+  processed  Boolean  @default(false)
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@map("raw_webhook_events")
+}
