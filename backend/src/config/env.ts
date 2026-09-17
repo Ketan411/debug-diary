@@ -8,6 +8,11 @@ const EnvSchema = z.object({
     .min(16, "JWT_SECRET must be at least 16 characters"),
   JWT_EXPIRES_IN: z.string().default("7d"),
   GEMINI_API_KEY: z.string().optional(),
+  LLM_BASE_URL: z
+    .string()
+    .default("https://api.groq.com/openai/v1"),
+  LLM_API_KEY: z.string().optional(),
+  LLM_MODEL: z.string().default("llama-3.3-70b-versatile"),
   GITHUB_WEBHOOK_SECRET: z.string().optional(),
   GITHUB_CLIENT_ID: z.string().optional(),
   GITHUB_CLIENT_SECRET: z.string().optional(),

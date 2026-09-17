@@ -1,6 +1,9 @@
 import crypto from "crypto";
 import { env } from "../config/env";
 import { prisma } from "../db/prisma";
+import { redactSecrets } from "./security.service";
+import { isRelevantCommit } from "./relevance.service";
+import { extractIncidentFromCommit } from "./ai.service";
 
 // ─── HMAC Signature Verification ─────────────────────────────────────────────
 
@@ -71,7 +74,7 @@ export async function handleWebhookEvent(
     ?.repository?.full_name;
 
   let matchedReposCount = 0;
-  let createdIncidentId: string | null = null;
+  let createdIncidentIds: string[] = [];
 
   if (repoFullName) {
     const repos = await prisma.repository.findMany({
@@ -79,24 +82,69 @@ export async function handleWebhookEvent(
     });
     matchedReposCount = repos.length;
 
-    // ─── A. Push Event Handler ───────────────────────────────────────────────
+    // ─── A. Push Event Handler with Open-Source AI Extraction Pipeline ───────
     if (eventType === "push" && repos.length > 0) {
-      const rawCommits = (payload as { commits?: Array<{ message?: string }> })?.commits;
-      const commitCount = Array.isArray(rawCommits) ? rawCommits.length : 1;
+      const pushPayload = payload as {
+        commits?: Array<{
+          id?: string;
+          message?: string;
+          url?: string;
+          added?: string[];
+          modified?: string[];
+          removed?: string[];
+        }>;
+      };
 
-      let bugFixCount = 0;
-      if (Array.isArray(rawCommits)) {
-        bugFixCount = rawCommits.filter((c) => {
-          const msg = (c?.message || "").toLowerCase();
-          return (
-            msg.startsWith("fix") ||
-            msg.includes("fix:") ||
-            msg.includes("bug") ||
-            msg.includes("hotfix") ||
-            msg.includes("resolve") ||
-            msg.includes("patch")
-          );
-        }).length;
+      const rawCommits = pushPayload.commits ?? [];
+      const commitCount = rawCommits.length;
+
+      for (const commit of rawCommits) {
+        const commitMsg = commit.message || "";
+        const modifiedFiles = [
+          ...(commit.added || []),
+          ...(commit.modified || []),
+          ...(commit.removed || []),
+        ];
+
+        // 1. Relevance Filter Check
+        const relevance = isRelevantCommit(commitMsg, undefined, modifiedFiles);
+
+        if (relevance.isRelevant) {
+          // 2. Sensitive Data Redaction Engine
+          const sanitizedMsg = redactSecrets(commitMsg);
+
+          // 3. Open-Source LLM Extraction Pipeline
+          const extracted = await extractIncidentFromCommit({
+            commitMessage: sanitizedMsg,
+            repoName: repoFullName,
+            commitSha: commit.id,
+            htmlUrl: commit.url,
+            modifiedFiles,
+          });
+
+          // 4. Save Incident Draft into database for each connected workspace
+          for (const repo of repos) {
+            const incident = await prisma.incident.create({
+              data: {
+                workspaceId: repo.workspaceId,
+                repositoryId: repo.id,
+                title: extracted.title,
+                category: extracted.category,
+                symptom: extracted.symptom,
+                rootCause: extracted.rootCause,
+                resolution: extracted.resolution,
+                status: "pending_review",
+                confidenceScore: extracted.confidenceScore,
+                commitSha: commit.id ? commit.id.slice(0, 7) : null,
+                commitMessage: sanitizedMsg,
+                githubUrl: commit.url ?? repo.githubUrl,
+                affectedFiles: extracted.affectedFiles,
+                tags: extracted.tags,
+              },
+            });
+            createdIncidentIds.push(incident.id);
+          }
+        }
       }
 
       for (const repo of repos) {
@@ -105,13 +153,15 @@ export async function handleWebhookEvent(
           data: {
             lastSyncedAt: new Date(),
             commitsAnalyzed: { increment: commitCount },
-            ...(bugFixCount > 0 ? { bugFixesDetected: { increment: bugFixCount } } : {}),
+            ...(createdIncidentIds.length > 0
+              ? { bugFixesDetected: { increment: createdIncidentIds.length } }
+              : {}),
           },
         });
       }
     }
 
-    // ─── B. Pull Request Event Handler ───────────────────────────────────────
+    // ─── B. Pull Request Event Handler with AI Extraction Pipeline ───────────
     if (eventType === "pull_request" && repos.length > 0) {
       const prPayload = payload as {
         action?: string;
@@ -129,58 +179,51 @@ export async function handleWebhookEvent(
       const action = prPayload.action;
 
       if (pr && (action === "opened" || action === "closed" || action === "reopened")) {
-        for (const repo of repos) {
-          // Categorize based on keywords in title/body
-          const text = `${pr.title} ${pr.body || ""}`.toLowerCase();
-          let category = "API";
-          if (text.includes("auth") || text.includes("token") || text.includes("login") || text.includes("jwt")) {
-            category = "Authentication";
-          } else if (text.includes("db") || text.includes("database") || text.includes("sql") || text.includes("prisma")) {
-            category = "Database";
-          } else if (text.includes("ui") || text.includes("css") || text.includes("frontend") || text.includes("component")) {
-            category = "Frontend";
-          } else if (text.includes("ci") || text.includes("build") || text.includes("deploy") || text.includes("docker")) {
-            category = "CI/CD";
-          } else if (text.includes("infra") || text.includes("server") || text.includes("nginx")) {
-            category = "Infrastructure";
-          }
+        const fullPRText = `${pr.title} ${pr.body || ""}`;
 
-          // Check if incident already exists for this PR
-          const existingIncident = await prisma.incident.findFirst({
-            where: { workspaceId: repo.workspaceId, pullRequest: `PR #${pr.number}` },
+        // 1. Relevance Check
+        const relevance = isRelevantCommit(fullPRText);
+
+        if (relevance.isRelevant) {
+          // 2. Sensitive Data Redaction Engine
+          const sanitizedPRText = redactSecrets(fullPRText);
+
+          // 3. Open-Source LLM Extraction Pipeline
+          const extracted = await extractIncidentFromCommit({
+            commitMessage: redactSecrets(pr.title),
+            diff: redactSecrets(pr.body || ""),
+            repoName: repoFullName,
+            pullRequest: `PR #${pr.number}`,
+            htmlUrl: pr.html_url,
           });
 
-          if (!existingIncident) {
-            const isMerged = pr.merged === true;
-            const newIncident = await prisma.incident.create({
-              data: {
-                workspaceId: repo.workspaceId,
-                repositoryId: repo.id,
-                title: pr.title,
-                category,
-                symptom: `Pull request #${pr.number} created by @${pr.user?.login || "contributor"}`,
-                rootCause: pr.body?.trim() || `Proposed fix in pull request #${pr.number}: ${pr.title}`,
-                resolution: isMerged
-                  ? `Fix verified and merged into default branch (${pr.html_url})`
-                  : `Under review in Pull Request: ${pr.html_url}`,
-                status: "pending_review",
-                confidenceScore: 0.85,
-                pullRequest: `PR #${pr.number}`,
-                githubUrl: pr.html_url,
-                tags: ["github-pr", category.toLowerCase(), action || "pr"],
-              },
+          for (const repo of repos) {
+            const existingIncident = await prisma.incident.findFirst({
+              where: { workspaceId: repo.workspaceId, pullRequest: `PR #${pr.number}` },
             });
-            createdIncidentId = newIncident.id;
 
-            // Increment bugFixesDetected if PR is a bug fix or merged
-            const isBugFix =
-              isMerged ||
-              text.includes("fix") ||
-              text.includes("bug") ||
-              text.includes("resolve") ||
-              text.includes("patch");
+            if (!existingIncident) {
+              const newIncident = await prisma.incident.create({
+                data: {
+                  workspaceId: repo.workspaceId,
+                  repositoryId: repo.id,
+                  title: extracted.title,
+                  category: extracted.category,
+                  symptom: extracted.symptom,
+                  rootCause: extracted.rootCause,
+                  resolution: pr.merged
+                    ? `Merged into default branch: ${extracted.resolution}`
+                    : extracted.resolution,
+                  status: "pending_review",
+                  confidenceScore: extracted.confidenceScore,
+                  pullRequest: `PR #${pr.number}`,
+                  githubUrl: pr.html_url,
+                  affectedFiles: extracted.affectedFiles,
+                  tags: Array.from(new Set([...extracted.tags, "github-pr"])),
+                },
+              });
+              createdIncidentIds.push(newIncident.id);
 
-            if (isBugFix) {
               await prisma.repository.update({
                 where: { id: repo.id },
                 data: {
@@ -213,14 +256,17 @@ export async function handleWebhookEvent(
       const action = issuePayload.action;
 
       if (issue && action === "opened") {
+        const sanitizedBody = redactSecrets(issue.body || "");
+        const sanitizedTitle = redactSecrets(issue.title);
+
         for (const repo of repos) {
           await prisma.incident.create({
             data: {
               workspaceId: repo.workspaceId,
               repositoryId: repo.id,
-              title: issue.title,
+              title: sanitizedTitle,
               category: "API",
-              symptom: issue.body?.trim() || `Issue #${issue.number} reported by @${issue.user?.login || "user"}`,
+              symptom: sanitizedBody || `Issue #${issue.number} reported by @${issue.user?.login || "user"}`,
               rootCause: "Under investigation (GitHub Issue)",
               resolution: `Tracked in GitHub Issue #${issue.number}: ${issue.html_url}`,
               status: "pending_review",
@@ -247,5 +293,6 @@ export async function handleWebhookEvent(
     deliveryId,
     repository: repoFullName ?? null,
     syncedWorkspaces: matchedReposCount,
+    createdIncidentsCount: createdIncidentIds.length,
   };
 }

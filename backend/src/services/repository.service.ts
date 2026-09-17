@@ -1,5 +1,8 @@
 import { prisma } from "../db/prisma";
 import { formatRelativeTime, formatNumber } from "../utils/format";
+import { isRelevantCommit } from "./relevance.service";
+import { redactSecrets } from "./security.service";
+import { extractIncidentFromCommit } from "./ai.service";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -94,45 +97,80 @@ export async function syncRepository(
     token = ownerMember?.user?.githubAccessToken ?? null;
   }
 
-  // 2. Fetch real commit history from GitHub API
-  try {
-    const headers: Record<string, string> = {
-      Accept: "application/vnd.github.v3+json",
-      "User-Agent": "DebugDiary-App",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    };
+  const headers: Record<string, string> = {
+    Accept: "application/vnd.github.v3+json",
+    "User-Agent": "DebugDiary-App",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
 
+  // 2. Fetch real commit history from GitHub REST API
+  try {
     const ghRes = await fetch(
-      `https://api.github.com/repos/${repo.fullName}/commits?per_page=100`,
+      `https://api.github.com/repos/${repo.fullName}/commits?per_page=50`,
       { headers }
     );
 
     if (ghRes.ok) {
       const commits = (await ghRes.json()) as Array<{
         sha: string;
+        html_url?: string;
         commit: { message: string };
       }>;
 
       if (Array.isArray(commits)) {
         realCommitCount = commits.length;
 
-        // Detect real bug fixes from commit messages
-        const bugFixes = commits.filter((c) => {
-          const msg = c.commit?.message?.toLowerCase() || "";
-          return (
-            msg.startsWith("fix") ||
-            msg.includes("fix:") ||
-            msg.includes("bug") ||
-            msg.includes("hotfix") ||
-            msg.includes("resolve") ||
-            msg.includes("patch")
-          );
-        });
-        realBugFixesCount = bugFixes.length;
+        for (const c of commits) {
+          const rawMsg = c.commit?.message || "";
+          
+          // A. Relevance Check
+          const relevance = isRelevantCommit(rawMsg);
+
+          if (relevance.isRelevant) {
+            // B. Sensitive Data Redaction Engine
+            const sanitizedMsg = redactSecrets(rawMsg);
+
+            // Check if incident already drafted for this commit
+            const shortSha = c.sha.slice(0, 7);
+            const existingIncident = await prisma.incident.findFirst({
+              where: { workspaceId, commitSha: shortSha },
+            });
+
+            if (!existingIncident) {
+              // C. Open-Source LLM AI Extraction Pipeline
+              const extracted = await extractIncidentFromCommit({
+                commitMessage: sanitizedMsg,
+                repoName: repo.fullName,
+                commitSha: c.sha,
+                htmlUrl: c.html_url ?? `https://github.com/${repo.fullName}/commit/${c.sha}`,
+              });
+
+              await prisma.incident.create({
+                data: {
+                  workspaceId,
+                  repositoryId: repo.id,
+                  title: extracted.title,
+                  category: extracted.category,
+                  symptom: extracted.symptom,
+                  rootCause: extracted.rootCause,
+                  resolution: extracted.resolution,
+                  status: "pending_review",
+                  confidenceScore: extracted.confidenceScore,
+                  commitSha: shortSha,
+                  commitMessage: sanitizedMsg,
+                  githubUrl: c.html_url ?? `https://github.com/${repo.fullName}/commit/${c.sha}`,
+                  affectedFiles: extracted.affectedFiles,
+                  tags: extracted.tags,
+                },
+              });
+              realBugFixesCount++;
+            }
+          }
+        }
       }
     }
 
-    // 2b. Fetch Pull Requests from GitHub and auto-draft Incidents for Review Queue
+    // 2b. Fetch Pull Requests from GitHub and draft Incidents
     try {
       const pullsRes = await fetch(
         `https://api.github.com/repos/${repo.fullName}/pulls?state=all&per_page=30`,
@@ -153,39 +191,44 @@ export async function syncRepository(
           const existing = await prisma.incident.findFirst({
             where: { workspaceId, pullRequest: `PR #${pr.number}` },
           });
-          if (!existing) {
-            const text = `${pr.title} ${pr.body || ""}`.toLowerCase();
-            let category = "API";
-            if (text.includes("auth") || text.includes("login") || text.includes("token")) {
-              category = "Authentication";
-            } else if (text.includes("db") || text.includes("database") || text.includes("sql") || text.includes("prisma")) {
-              category = "Database";
-            } else if (text.includes("ui") || text.includes("css") || text.includes("frontend") || text.includes("readme") || text.includes("doc")) {
-              category = "Frontend";
-            } else if (text.includes("ci") || text.includes("build") || text.includes("deploy") || text.includes("docker")) {
-              category = "CI/CD";
-            } else if (text.includes("infra") || text.includes("server")) {
-              category = "Infrastructure";
-            }
 
-            await prisma.incident.create({
-              data: {
-                workspaceId,
-                repositoryId: repo.id,
-                title: pr.title,
-                category,
-                symptom: `Pull request #${pr.number} created by @${pr.user?.login || "contributor"} (${pr.state})`,
-                rootCause: pr.body?.trim() || `Changes proposed in Pull Request #${pr.number}: ${pr.title}`,
-                resolution: pr.merged_at
-                  ? `Fix verified and merged into default branch (${pr.html_url})`
-                  : `Tracked in Pull Request: ${pr.html_url}`,
-                status: "pending_review",
-                confidenceScore: 0.85,
+          if (!existing) {
+            const fullPRText = `${pr.title} ${pr.body || ""}`;
+            const relevance = isRelevantCommit(fullPRText);
+
+            if (relevance.isRelevant) {
+              const sanitizedTitle = redactSecrets(pr.title);
+              const sanitizedBody = redactSecrets(pr.body || "");
+
+              const extracted = await extractIncidentFromCommit({
+                commitMessage: sanitizedTitle,
+                diff: sanitizedBody,
+                repoName: repo.fullName,
                 pullRequest: `PR #${pr.number}`,
-                githubUrl: pr.html_url,
-                tags: ["github-pr", category.toLowerCase(), pr.state],
-              },
-            });
+                htmlUrl: pr.html_url,
+              });
+
+              await prisma.incident.create({
+                data: {
+                  workspaceId,
+                  repositoryId: repo.id,
+                  title: extracted.title,
+                  category: extracted.category,
+                  symptom: extracted.symptom,
+                  rootCause: extracted.rootCause,
+                  resolution: pr.merged_at
+                    ? `Merged into default branch: ${extracted.resolution}`
+                    : extracted.resolution,
+                  status: "pending_review",
+                  confidenceScore: extracted.confidenceScore,
+                  pullRequest: `PR #${pr.number}`,
+                  githubUrl: pr.html_url,
+                  affectedFiles: extracted.affectedFiles,
+                  tags: Array.from(new Set([...extracted.tags, "github-pr"])),
+                },
+              });
+              realBugFixesCount++;
+            }
           }
         }
       }
@@ -196,7 +239,7 @@ export async function syncRepository(
     console.warn("Could not fetch commits from GitHub API for:", repo.fullName, err);
   }
 
-  // 3. Persist exact commit and bug fix count (commits + PR incidents)
+  // 3. Persist exact commit and bug fix count
   const incidentCount = await prisma.incident.count({
     where: { repositoryId },
   });
