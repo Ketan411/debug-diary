@@ -31,13 +31,13 @@ import { repositoriesApi, authApi, Repository, AvailableGitHubRepo } from "@/lib
 export const Route = createFileRoute("/repositories")({
   head: () => ({
     meta: [
-      { title: "Repositories — DebugDiary" },
+      { title: "Repositories - DebugDiary" },
       {
         name: "description",
         content:
           "Connect and manage the GitHub repositories used to build your DebugDiary debugging knowledge base.",
       },
-      { property: "og:title", content: "Repositories — DebugDiary" },
+      { property: "og:title", content: "Repositories - DebugDiary" },
       {
         property: "og:description",
         content:

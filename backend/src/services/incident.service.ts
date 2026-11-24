@@ -62,6 +62,7 @@ export async function listIncidents(
     status?: string;
     category?: string;
     search?: string;
+    repository?: string;
   }
 ) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -73,6 +74,10 @@ export async function listIncidents(
 
   if (filters.category && filters.category !== "All") {
     where.category = filters.category;
+  }
+
+  if (filters.repository && filters.repository !== "All") {
+    where.repository = { fullName: filters.repository };
   }
 
   if (filters.search) {
@@ -96,9 +101,16 @@ export async function listIncidents(
 
 // ─── Review Queue ─────────────────────────────────────────────────────────────
 
-export async function getReviewQueue(workspaceId: string) {
+export async function getReviewQueue(workspaceId: string, repository?: string) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const where: any = { workspaceId, status: "pending_review" };
+
+  if (repository && repository !== "All") {
+    where.repository = { fullName: repository };
+  }
+
   const incidents = await prisma.incident.findMany({
-    where: { workspaceId, status: "pending_review" },
+    where,
     include: { repository: true, evidenceArtifacts: true },
     orderBy: { createdAt: "asc" },
   });

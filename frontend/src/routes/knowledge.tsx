@@ -1,20 +1,21 @@
 import { useEffect, useState, useCallback } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { Plus, RefreshCw, Search } from "lucide-react";
+import { Plus, RefreshCw, Search, LayoutGrid, Network } from "lucide-react";
 
 import { AppShell } from "@/components/layout/app-shell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { IncidentCard, Incident, IncidentCategory } from "@/components/knowledge/incident-card";
-import { incidentsApi } from "@/lib/api";
+import { KnowledgeGraph } from "@/components/knowledge/knowledge-graph";
+import { incidentsApi, getSelectedRepo } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/knowledge")({
   head: () => ({
     meta: [
-      { title: "Knowledge — DebugDiary" },
+      { title: "Knowledge - DebugDiary" },
       { name: "description", content: "Verified debugging knowledge from your repositories in DebugDiary." },
-      { property: "og:title", content: "Knowledge — DebugDiary" },
+      { property: "og:title", content: "Knowledge - DebugDiary" },
       { property: "og:description", content: "Verified debugging knowledge from your repositories in DebugDiary." },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
@@ -48,8 +49,10 @@ function EmptyState() {
 function KnowledgePage() {
   const [search, setSearch] = useState("");
   const [activeFilter, setActiveFilter] = useState<IncidentCategory | "All">("All");
+  const [selectedRepo, setSelectedRepoState] = useState<string>("All");
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [loading, setLoading] = useState(true);
+  const [viewMode, setViewMode] = useState<"cards" | "graph">("cards");
 
   const loadIncidents = useCallback(() => {
     setLoading(true);
@@ -57,6 +60,7 @@ function KnowledgePage() {
       .list({
         category: activeFilter === "All" ? undefined : activeFilter,
         search: search.trim() || undefined,
+        repository: getSelectedRepo() !== "All" ? getSelectedRepo() : undefined,
       })
       .then((res) => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -67,6 +71,18 @@ function KnowledgePage() {
       })
       .finally(() => setLoading(false));
   }, [activeFilter, search]);
+
+  useEffect(() => {
+    setSelectedRepoState(getSelectedRepo());
+    const handleRepoChange = () => {
+      setSelectedRepoState(getSelectedRepo());
+      loadIncidents();
+    };
+    window.addEventListener("repo_change", handleRepoChange);
+    return () => {
+      window.removeEventListener("repo_change", handleRepoChange);
+    };
+  }, [loadIncidents]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -91,6 +107,26 @@ function KnowledgePage() {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            <div className="flex items-center rounded-lg border border-border bg-card/60 p-0.5">
+              <Button
+                variant={viewMode === "cards" ? "secondary" : "ghost"}
+                size="sm"
+                className="h-7 px-2.5 text-xs gap-1.5"
+                onClick={() => setViewMode("cards")}
+              >
+                <LayoutGrid className="h-3.5 w-3.5" />
+                Cards
+              </Button>
+              <Button
+                variant={viewMode === "graph" ? "secondary" : "ghost"}
+                size="sm"
+                className="h-7 px-2.5 text-xs gap-1.5"
+                onClick={() => setViewMode("graph")}
+              >
+                <Network className="h-3.5 w-3.5" />
+                Graph Mesh
+              </Button>
+            </div>
             <Button
               variant="outline"
               size="sm"
@@ -101,7 +137,7 @@ function KnowledgePage() {
               <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
               Refresh
             </Button>
-            <Button>
+            <Button size="sm">
               <Plus className="h-4 w-4" />
               Add Incident
             </Button>
@@ -138,11 +174,15 @@ function KnowledgePage() {
         </div>
 
         {incidents.length > 0 ? (
-          <div className="space-y-4">
-            {incidents.map((incident) => (
-              <IncidentCard key={incident.id} incident={incident} />
-            ))}
-          </div>
+          viewMode === "graph" ? (
+            <KnowledgeGraph incidents={incidents} selectedRepo={selectedRepo} />
+          ) : (
+            <div className="space-y-4">
+              {incidents.map((incident) => (
+                <IncidentCard key={incident.id} incident={incident} />
+              ))}
+            </div>
+          )
         ) : (
           <EmptyState />
         )}

@@ -11,7 +11,11 @@ router.use(authenticate);
 // GET /api/analytics/dashboard
 router.get("/dashboard", async (req: Request, res: Response) => {
   try {
-    const data = await getDashboardAnalytics(req.user!.workspaceId);
+    const { repository } = req.query;
+    const data = await getDashboardAnalytics(
+      req.user!.workspaceId,
+      repository as string | undefined
+    );
     res.json(data);
   } catch (err: unknown) {
     res.status(500).json({ error: (err as Error).message });
@@ -21,7 +25,11 @@ router.get("/dashboard", async (req: Request, res: Response) => {
 // GET /api/analytics/hotspots
 router.get("/hotspots", async (req: Request, res: Response) => {
   try {
-    const data = await getHotspots(req.user!.workspaceId);
+    const { repository } = req.query;
+    const data = await getHotspots(
+      req.user!.workspaceId,
+      repository as string | undefined
+    );
     res.json(data);
   } catch (err: unknown) {
     res.status(500).json({ error: (err as Error).message });

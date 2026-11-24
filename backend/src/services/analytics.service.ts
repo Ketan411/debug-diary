@@ -2,21 +2,30 @@ import { format, subMonths, startOfMonth, endOfMonth } from "date-fns";
 import { prisma } from "../db/prisma";
 import { statusToDisplay } from "../utils/format";
 
-// ─── Dashboard Analytics ──────────────────────────────────────────────────────
+// --- Dashboard Analytics ------------------------------------------------------
 
-export async function getDashboardAnalytics(workspaceId: string) {
+export async function getDashboardAnalytics(
+  workspaceId: string,
+  repository?: string
+) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const incidentWhere: any = { workspaceId };
+  if (repository && repository !== "All") {
+    incidentWhere.repository = { fullName: repository };
+  }
+
   // Parallel stat queries
   const [totalIncidents, verified, pendingReview, repositories] =
     await Promise.all([
-      prisma.incident.count({ where: { workspaceId } }),
-      prisma.incident.count({ where: { workspaceId, status: "verified" } }),
+      prisma.incident.count({ where: incidentWhere }),
+      prisma.incident.count({ where: { ...incidentWhere, status: "verified" } }),
       prisma.incident.count({
-        where: { workspaceId, status: "pending_review" },
+        where: { ...incidentWhere, status: "pending_review" },
       }),
       prisma.repository.count({ where: { workspaceId } }),
     ]);
 
-  // Parallel trend queries — last 6 months
+  // Parallel trend queries: last 6 months
   const now = new Date();
   const trendPromises = Array.from({ length: 6 }, (_, i) => {
     const date = subMonths(now, 5 - i);
@@ -25,7 +34,7 @@ export async function getDashboardAnalytics(workspaceId: string) {
     return prisma.incident
       .count({
         where: {
-          workspaceId,
+          ...incidentWhere,
           createdAt: { gte: start, lte: end },
         },
       })
@@ -35,7 +44,7 @@ export async function getDashboardAnalytics(workspaceId: string) {
 
   // Recent incidents (last 5, any status)
   const recentRaw = await prisma.incident.findMany({
-    where: { workspaceId },
+    where: incidentWhere,
     orderBy: { updatedAt: "desc" },
     take: 5,
   });
@@ -61,11 +70,20 @@ export async function getDashboardAnalytics(workspaceId: string) {
   };
 }
 
-// ─── Hotspot Analytics ────────────────────────────────────────────────────────
+// --- Hotspot Analytics --------------------------------------------------------
 
-export async function getHotspots(workspaceId: string) {
+export async function getHotspots(
+  workspaceId: string,
+  repository?: string
+) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const where: any = { workspaceId, status: "verified" };
+  if (repository && repository !== "All") {
+    where.repository = { fullName: repository };
+  }
+
   const incidents = await prisma.incident.findMany({
-    where: { workspaceId, status: "verified" },
+    where,
     select: { affectedFiles: true, category: true, tags: true },
   });
 

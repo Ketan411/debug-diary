@@ -13,9 +13,10 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { toast } from "sonner";
-import { repositoriesApi } from "@/lib/api";
+import { repositoriesApi, getSelectedRepo, setSelectedRepo } from "@/lib/api";
+import { Check, Target } from "lucide-react";
 
 interface RepositoryCardProps {
   id?: string | undefined;
@@ -41,7 +42,26 @@ export function RepositoryCard({
   onSyncComplete,
 }: RepositoryCardProps) {
   const [syncing, setSyncing] = useState(false);
+  const [activeRepo, setActiveRepo] = useState("All");
   const isConnected = status === "Connected";
+
+  useEffect(() => {
+    setActiveRepo(getSelectedRepo());
+    const handleRepoChange = () => {
+      setActiveRepo(getSelectedRepo());
+    };
+    window.addEventListener("repo_change", handleRepoChange);
+    return () => {
+      window.removeEventListener("repo_change", handleRepoChange);
+    };
+  }, []);
+
+  const isCurrentScope = activeRepo === name;
+
+  const handleSelectScope = () => {
+    setSelectedRepo(name);
+    toast.success(`Scoped workspace to ${name}`);
+  };
 
   const handleSync = async () => {
     if (!id) {
@@ -166,6 +186,26 @@ export function RepositoryCard({
             <ExternalLink className="h-3.5 w-3.5" />
             View Repository
           </Button>
+
+          {isCurrentScope ? (
+            <Badge
+              variant="outline"
+              className="border-primary/40 bg-primary/10 text-primary text-xs gap-1 py-1"
+            >
+              <Check className="h-3 w-3" />
+              Active Scope
+            </Badge>
+          ) : (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleSelectScope}
+              className="gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+            >
+              <Target className="h-3 w-3 text-primary" />
+              Set as Active
+            </Button>
+          )}
         </div>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>

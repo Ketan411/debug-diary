@@ -13,13 +13,13 @@ import { toast } from "sonner";
 export const Route = createFileRoute("/dashboard")({
   head: () => ({
     meta: [
-      { title: "Dashboard — DebugDiary" },
+      { title: "Dashboard - DebugDiary" },
       {
         name: "description",
         content:
           "Overview of incidents, verified fixes and connected repositories in your DebugDiary workspace.",
       },
-      { property: "og:title", content: "Dashboard — DebugDiary" },
+      { property: "og:title", content: "Dashboard - DebugDiary" },
       {
         property: "og:description",
         content: "Track debugging knowledge, incident trends and pending reviews.",
@@ -73,15 +73,27 @@ function DashboardPage() {
       }
     }
 
-    analyticsApi
-      .getDashboard()
-      .then((res) => {
-        setData(res);
-      })
-      .catch((err) => {
-        console.error("Failed to load dashboard data:", err);
-      })
-      .finally(() => setLoading(false));
+    const loadDashboardData = () => {
+      analyticsApi
+        .getDashboard()
+        .then((res) => {
+          setData(res);
+        })
+        .catch((err) => {
+          console.error("Failed to load dashboard data:", err);
+        })
+        .finally(() => setLoading(false));
+    };
+
+    loadDashboardData();
+
+    const handleRepoChange = () => {
+      loadDashboardData();
+    };
+    window.addEventListener("repo_change", handleRepoChange);
+    return () => {
+      window.removeEventListener("repo_change", handleRepoChange);
+    };
   }, []);
 
   const stats = [

@@ -1,5 +1,5 @@
 /**
- * frontend/src/lib/api.ts — Central API client for DebugDiary backend
+ * frontend/src/lib/api.ts: Central API client for DebugDiary backend
  */
 
 export const API_BASE =
@@ -23,6 +23,21 @@ export function clearStoredToken() {
   if (typeof window !== "undefined") {
     localStorage.removeItem("debugdiary_token");
     localStorage.removeItem("debugdiary_user");
+  }
+}
+
+// Global Repository Selection
+export function getSelectedRepo(): string {
+  if (typeof window === "undefined") return "All";
+  return localStorage.getItem("debugdiary_selected_repo") || "All";
+}
+
+export function setSelectedRepo(repo: string) {
+  if (typeof window !== "undefined") {
+    localStorage.setItem("debugdiary_selected_repo", repo);
+    window.dispatchEvent(
+      new CustomEvent("repo_change", { detail: { repository: repo } })
+    );
   }
 }
 
@@ -104,6 +119,7 @@ export interface WorkspaceDetail {
 export interface Repository {
   id: string;
   name: string;
+  fullName?: string | undefined;
   description: string;
   status: "Connected" | "Disconnected" | "Syncing";
   lastSynced: string;
@@ -326,18 +342,22 @@ export const workspacesApi = {
 };
 
 export const analyticsApi = {
-  async getDashboard(): Promise<DashboardData> {
-    return apiFetch<DashboardData>("/analytics/dashboard");
+  async getDashboard(repository?: string): Promise<DashboardData> {
+    const repo = repository ?? getSelectedRepo();
+    const qs = repo && repo !== "All" ? `?repository=${encodeURIComponent(repo)}` : "";
+    return apiFetch<DashboardData>(`/analytics/dashboard${qs}`);
   },
 
-  async getHotspots(): Promise<{
+  async getHotspots(repository?: string): Promise<{
     topCategories: Array<{ category: string; count: number }>;
     hotspotFiles: Array<{ filePath: string; incidentCount: number }>;
   }> {
+    const repo = repository ?? getSelectedRepo();
+    const qs = repo && repo !== "All" ? `?repository=${encodeURIComponent(repo)}` : "";
     return apiFetch<{
       topCategories: Array<{ category: string; count: number }>;
       hotspotFiles: Array<{ filePath: string; incidentCount: number }>;
-    }>("/analytics/hotspots");
+    }>(`/analytics/hotspots${qs}`);
   },
 };
 
@@ -346,11 +366,14 @@ export const incidentsApi = {
     status?: string | undefined;
     category?: string | undefined;
     search?: string | undefined;
+    repository?: string | undefined;
   }): Promise<{ incidents: Incident[]; total: number }> {
     const params = new URLSearchParams();
     if (filters?.status) params.set("status", filters.status);
     if (filters?.category && filters.category !== "All") params.set("category", filters.category);
     if (filters?.search) params.set("search", filters.search);
+    const repo = filters?.repository ?? getSelectedRepo();
+    if (repo && repo !== "All") params.set("repository", repo);
     const qs = params.toString();
     return apiFetch<{ incidents: Incident[]; total: number }>(`/incidents${qs ? `?${qs}` : ""}`);
   },
@@ -359,8 +382,10 @@ export const incidentsApi = {
     return apiFetch<{ incident: Incident }>(`/incidents/${id}`);
   },
 
-  async getReviewQueue(): Promise<{ incidents: ReviewIncident[]; total: number }> {
-    return apiFetch<{ incidents: ReviewIncident[]; total: number }>("/incidents/review-queue");
+  async getReviewQueue(repository?: string): Promise<{ incidents: ReviewIncident[]; total: number }> {
+    const repo = repository ?? getSelectedRepo();
+    const qs = repo && repo !== "All" ? `?repository=${encodeURIComponent(repo)}` : "";
+    return apiFetch<{ incidents: ReviewIncident[]; total: number }>(`/incidents/review-queue${qs}`);
   },
 
   async review(
@@ -437,9 +462,14 @@ export const searchApi = {
     query: string,
     filters?: { category?: string | undefined; repository?: string | undefined }
   ): Promise<{ results: SearchResult[]; total: number; query: string }> {
+    const repo = filters?.repository ?? getSelectedRepo();
     return apiFetch<{ results: SearchResult[]; total: number; query: string }>("/search", {
       method: "POST",
-      body: JSON.stringify({ query, ...filters }),
+      body: JSON.stringify({
+        query,
+        category: filters?.category && filters.category !== "All" ? filters.category : undefined,
+        repository: repo && repo !== "All" ? repo : undefined,
+      }),
     });
   },
 };

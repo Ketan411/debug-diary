@@ -7,6 +7,7 @@ import {
   reviewIncident,
   getIncidentById,
 } from "../services/incident.service";
+import { computeWorkspaceSimilarityMesh } from "../services/similarity.service";
 
 const router = Router();
 router.use(authenticate);
@@ -27,10 +28,14 @@ const ReviewSchema = z.object({
     .optional(),
 });
 
-// GET /api/incidents/review-queue  — MUST be before /:id
+// GET /api/incidents/review-queue (MUST be before /:id)
 router.get("/review-queue", async (req: Request, res: Response) => {
   try {
-    const result = await getReviewQueue(req.user!.workspaceId);
+    const { repository } = req.query;
+    const result = await getReviewQueue(
+      req.user!.workspaceId,
+      repository as string | undefined
+    );
     res.json(result);
   } catch (err: unknown) {
     res.status(500).json({ error: (err as Error).message });
@@ -40,13 +45,32 @@ router.get("/review-queue", async (req: Request, res: Response) => {
 // GET /api/incidents?status=verified&category=Authentication&search=JWT
 router.get("/", async (req: Request, res: Response) => {
   try {
-    const { status, category, search } = req.query;
+    const { status, category, search, repository } = req.query;
     const incidents = await listIncidents(req.user!.workspaceId, {
       status: status as string | undefined,
       category: category as string | undefined,
       search: search as string | undefined,
+      repository: repository as string | undefined,
     });
     res.json({ incidents, total: incidents.length });
+  } catch (err: unknown) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// GET /api/incidents/similarity-mesh
+router.get("/similarity-mesh", async (req: Request, res: Response) => {
+  try {
+    const threshold = req.query.threshold
+      ? parseFloat(req.query.threshold as string)
+      : 0.50;
+    const { repository } = req.query;
+    const edges = await computeWorkspaceSimilarityMesh(
+      req.user!.workspaceId,
+      threshold,
+      repository as string | undefined
+    );
+    res.json({ edges, totalEdges: edges.length });
   } catch (err: unknown) {
     res.status(500).json({ error: (err as Error).message });
   }

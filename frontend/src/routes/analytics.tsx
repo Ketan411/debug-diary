@@ -23,9 +23,9 @@ import { analyticsApi, DashboardData } from "@/lib/api";
 export const Route = createFileRoute("/analytics")({
   head: () => ({
     meta: [
-      { title: "Analytics — DebugDiary" },
+      { title: "Analytics - DebugDiary" },
       { name: "description", content: "Analytics in your DebugDiary debugging knowledge workspace." },
-      { property: "og:title", content: "Analytics — DebugDiary" },
+      { property: "og:title", content: "Analytics - DebugDiary" },
       { property: "og:description", content: "Analytics in your DebugDiary debugging knowledge workspace." },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
@@ -59,6 +59,13 @@ function AnalyticsPage() {
 
   useEffect(() => {
     loadData();
+    const handleRepoChange = () => {
+      loadData();
+    };
+    window.addEventListener("repo_change", handleRepoChange);
+    return () => {
+      window.removeEventListener("repo_change", handleRepoChange);
+    };
   }, []);
 
   const total = dashboard?.stats.totalIncidents ?? 8;

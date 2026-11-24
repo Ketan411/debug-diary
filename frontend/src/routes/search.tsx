@@ -23,18 +23,18 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { searchApi } from "@/lib/api";
+import { searchApi, getSelectedRepo } from "@/lib/api";
 
 export const Route = createFileRoute("/search")({
   head: () => ({
     meta: [
-      { title: "Search — DebugDiary" },
+      { title: "Search - DebugDiary" },
       {
         name: "description",
         content:
           "Search verified debugging incidents across your team's knowledge base in DebugDiary.",
       },
-      { property: "og:title", content: "Search — DebugDiary" },
+      { property: "og:title", content: "Search - DebugDiary" },
       {
         property: "og:description",
         content:
@@ -202,10 +202,21 @@ function SearchPage() {
   const [query, setQuery] = useState(exampleQueries[0] ?? "");
   const [hasSearched, setHasSearched] = useState(true);
   const [categoryFilter, setCategoryFilter] = useState("All");
-  const [repositoryFilter, setRepositoryFilter] = useState("All");
+  const [repositoryFilter, setRepositoryFilter] = useState(getSelectedRepo());
   const [similarityFilter, setSimilarityFilter] = useState("All");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    setRepositoryFilter(getSelectedRepo());
+    const handleRepoChange = () => {
+      setRepositoryFilter(getSelectedRepo());
+    };
+    window.addEventListener("repo_change", handleRepoChange);
+    return () => {
+      window.removeEventListener("repo_change", handleRepoChange);
+    };
+  }, []);
 
   const executeSearch = useCallback((searchQuery?: string) => {
     const q = (searchQuery ?? query).trim();

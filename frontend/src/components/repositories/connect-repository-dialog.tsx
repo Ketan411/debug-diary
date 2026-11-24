@@ -16,7 +16,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { repositoriesApi, AvailableGitHubRepo } from "@/lib/api";
+import { repositoriesApi, AvailableGitHubRepo, setSelectedRepo } from "@/lib/api";
 
 interface ConnectRepositoryDialogProps {
   children: React.ReactNode;
@@ -56,6 +56,11 @@ export function ConnectRepositoryDialog({ children, onConnected }: ConnectReposi
       setUrl("");
       setDescription("");
       toast.success("Repository connected successfully.");
+
+      const connectedRepoName = res.repository?.fullName || res.repository?.name;
+      if (connectedRepoName) {
+        setSelectedRepo(connectedRepoName);
+      }
 
       if (res.repository?.id) {
         repositoriesApi.sync(res.repository.id).catch(console.error);
@@ -108,7 +113,7 @@ export function ConnectRepositoryDialog({ children, onConnected }: ConnectReposi
                     <span className="font-semibold">{repo.name}</span>
                     {repo.description && (
                       <span className="text-muted-foreground ml-1.5 text-[11px] truncate">
-                        — {repo.description}
+                        : {repo.description}
                       </span>
                     )}
                   </div>

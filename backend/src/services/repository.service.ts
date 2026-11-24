@@ -9,6 +9,7 @@ import { extractIncidentFromCommit } from "./ai.service";
 export interface FormattedRepository {
   id: string;
   name: string;
+  fullName: string;
   description: string;
   status: string;
   lastSynced: string;
@@ -323,6 +324,7 @@ export function formatRepository(repo: any): FormattedRepository {
   return {
     id: repo.id,
     name: repo.fullName,
+    fullName: repo.fullName,
     description: repo.description,
     status: repo.status,
     lastSynced: formatRelativeTime(repo.lastSyncedAt),

@@ -36,13 +36,13 @@ import { cn } from "@/lib/utils";
 export const Route = createFileRoute("/incident-review")({
   head: () => ({
     meta: [
-      { title: "Incident Review — DebugDiary" },
+      { title: "Incident Review - DebugDiary" },
       {
         name: "description",
         content:
           "Review AI-generated debugging incidents before they become verified knowledge in DebugDiary.",
       },
-      { property: "og:title", content: "Incident Review — DebugDiary" },
+      { property: "og:title", content: "Incident Review - DebugDiary" },
       {
         property: "og:description",
         content:
@@ -274,6 +274,13 @@ function IncidentReviewPage() {
 
   useEffect(() => {
     loadQueue();
+    const handleRepoChange = () => {
+      loadQueue();
+    };
+    window.addEventListener("repo_change", handleRepoChange);
+    return () => {
+      window.removeEventListener("repo_change", handleRepoChange);
+    };
   }, [loadQueue]);
 
   const incident = queue[currentIndex] || queue[0];

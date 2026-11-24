@@ -1,115 +1,268 @@
 import { prisma } from "../db/prisma";
 import { statusToDisplay, getEvidence } from "../utils/format";
+import { generateEmbedding, cosineSimilarity } from "./embedding.service";
 
-// ─── Hybrid Search ────────────────────────────────────────────────────────────
-// Phase 1: PostgreSQL full-text search with relevance scoring.
-// Phase 4 (future): Add pgvector cosine similarity on top.
+// ============================================================================
+// Embedding Cache
+// Caches computed incident embedding vectors in memory to ensure fast
+// response times (<5ms) on repeated queries and avoid redundant API/hash calls.
+// ============================================================================
+const incidentEmbeddingCache = new Map<string, { updatedAt: Date; vector: number[] }>();
 
+export interface SearchFilters {
+  category?: string;
+  repository?: string;
+}
+
+export interface SearchResultItem {
+  id: string;
+  title: string;
+  status: "Verified" | "Pending Review" | "Rejected";
+  matchScore: number;
+  category: string;
+  tags: string[];
+  symptom: string;
+  rootCause: string;
+  repository: string;
+  evidence: string;
+  evidenceType: "pr" | "commit";
+  githubUrl: string;
+}
+
+/**
+ * Phase 4: Hybrid Search Engine
+ * Merges Lexical Keyword Search (BM25-style term frequency) with
+ * Dense Vector Semantic Search (Cosine Similarity) using Reciprocal Rank Fusion (RRF).
+ */
 export async function hybridSearch(
   workspaceId: string,
   query: string,
-  filters?: { category?: string; repository?: string }
-) {
-  if (!query.trim()) return { results: [], total: 0 };
+  filters?: SearchFilters
+): Promise<{ results: SearchResultItem[]; total: number }> {
+  const trimmedQuery = query.trim();
+  if (!trimmedQuery) return { results: [], total: 0 };
 
-  const terms = query
+  // Tokenize query into distinct search terms (filter out 1-letter noise)
+  const queryTerms = trimmedQuery
     .toLowerCase()
     .split(/\s+/)
-    .filter((t) => t.length > 1); // ignore single-char tokens
+    .filter((term) => term.length > 1);
 
-  if (terms.length === 0) return { results: [], total: 0 };
+  if (queryTerms.length === 0) return { results: [], total: 0 };
 
-  // Build OR conditions across all searchable text fields
-  const incidents = await prisma.incident.findMany({
+  // 1. Fetch candidate verified incidents within the workspace
+  const candidateIncidents = await prisma.incident.findMany({
     where: {
       workspaceId,
-      status: "verified", // only search confirmed fixes
-      OR: terms.flatMap((term) => [
-        { title: { contains: term, mode: "insensitive" } },
-        { symptom: { contains: term, mode: "insensitive" } },
-        { rootCause: { contains: term, mode: "insensitive" } },
-        { resolution: { contains: term, mode: "insensitive" } },
-        { category: { contains: term, mode: "insensitive" } },
-        { commitMessage: { contains: term, mode: "insensitive" } },
-      ]),
+      status: "verified",
+      ...(filters?.category && filters.category !== "All"
+        ? { category: filters.category }
+        : {}),
+      ...(filters?.repository && filters.repository !== "All"
+        ? { repository: { fullName: filters.repository } }
+        : {}),
     },
     include: { repository: true },
-    take: 50,
+    take: 100,
   });
 
-  // Client-side repository filter
-  let results = incidents;
-  if (filters?.repository && filters.repository !== "All") {
-    results = incidents.filter(
-      (i) => i.repository?.fullName === filters.repository
-    );
-  }
-  if (filters?.category && filters.category !== "All") {
-    results = results.filter((i) => i.category === filters.category);
+  if (candidateIncidents.length === 0) {
+    return { results: [], total: 0 };
   }
 
-  // Relevance scoring
-  const scored = results
-    .map((incident) => {
-      const score = calculateMatchScore(incident, terms);
-      const { evidence, evidenceType } = getEvidence(incident);
+  // 2. Generate dense embedding vector for the incoming user query
+  const queryVector = await generateEmbedding(trimmedQuery);
 
-      return {
-        id: incident.id,
-        title: incident.title,
-        status: statusToDisplay(incident.status),
-        matchScore: score,
-        category: incident.category,
-        tags: incident.tags ?? [],
-        symptom: incident.symptom,
-        rootCause: incident.rootCause,
-        repository: incident.repository?.fullName ?? "Unknown",
-        evidence,
-        evidenceType,
-        githubUrl: incident.githubUrl ?? "",
-      };
-    })
-    .sort((a, b) => b.matchScore - a.matchScore);
+  // 3. Compute both Lexical and Semantic scores for each candidate incident
+  interface ScoredCandidate {
+    incident: (typeof candidateIncidents)[0];
+    lexicalScore: number;
+    semanticScore: number;
+    lexicalRank?: number;
+    semanticRank?: number;
+    rrfScore: number;
+    finalMatchScore: number;
+  }
 
-  return { results: scored, total: scored.length };
+  const scoredCandidates: ScoredCandidate[] = [];
+
+  for (const incident of candidateIncidents) {
+    // 3a. Lexical Keyword Score (0 to 100)
+    const lexicalScore = calculateLexicalScore(incident, queryTerms, trimmedQuery);
+
+    // 3b. Semantic Vector Embedding Score (0 to 100)
+    const incidentVector = await getOrComputeIncidentEmbedding(incident);
+    const rawCosine = cosineSimilarity(queryVector, incidentVector);
+    const semanticScore = Math.round(rawCosine * 100);
+
+    scoredCandidates.push({
+      incident,
+      lexicalScore,
+      semanticScore,
+      rrfScore: 0,
+      finalMatchScore: 0,
+    });
+  }
+
+  // 4. Reciprocal Rank Fusion (RRF with industry standard k = 60)
+  // Rank by Lexical score descending
+  const lexicalSorted = [...scoredCandidates]
+    .filter((c) => c.lexicalScore > 0)
+    .sort((a, b) => b.lexicalScore - a.lexicalScore);
+
+  lexicalSorted.forEach((item, index) => {
+    item.lexicalRank = index + 1; // 1-based rank
+  });
+
+  // Rank by Semantic score descending (ignore orthogonal noise < 15%)
+  const semanticSorted = [...scoredCandidates]
+    .filter((c) => c.semanticScore > 15)
+    .sort((a, b) => b.semanticScore - a.semanticScore);
+
+  semanticSorted.forEach((item, index) => {
+    item.semanticRank = index + 1; // 1-based rank
+  });
+
+  const RRF_K = 60;
+
+  // 5. Calculate composite RRF score and calibrated final match score
+  for (const item of scoredCandidates) {
+    let rrf = 0;
+    if (item.lexicalRank) {
+      rrf += 1 / (RRF_K + item.lexicalRank);
+    }
+    if (item.semanticRank) {
+      rrf += 1 / (RRF_K + item.semanticRank);
+    }
+    item.rrfScore = rrf;
+
+    // Calibrated user-facing match score (0 to 100 percentage)
+    // Hybrid weighting: 40% keyword match + 60% semantic similarity
+    if (item.lexicalScore > 0 && item.semanticScore > 0) {
+      item.finalMatchScore = Math.min(
+        100,
+        Math.round(0.4 * item.lexicalScore + 0.6 * item.semanticScore + 5)
+      );
+    } else if (item.lexicalScore > 0) {
+      item.finalMatchScore = item.lexicalScore;
+    } else {
+      item.finalMatchScore = item.semanticScore;
+    }
+  }
+
+  // 6. Filter out non-matching noise and sort by RRF rank descending
+  const filteredResults = scoredCandidates
+    .filter((item) => item.lexicalScore > 0 || item.semanticScore >= 35)
+    .sort((a, b) => {
+      if (b.rrfScore !== a.rrfScore) {
+        return b.rrfScore - a.rrfScore;
+      }
+      return b.finalMatchScore - a.finalMatchScore;
+    });
+
+  // 7. Format output payload for frontend UI consumption
+  const results: SearchResultItem[] = filteredResults.map(({ incident, finalMatchScore }) => {
+    const { evidence, evidenceType } = getEvidence(incident);
+
+    return {
+      id: incident.id,
+      title: incident.title,
+      status: statusToDisplay(incident.status),
+      matchScore: finalMatchScore,
+      category: incident.category,
+      tags: incident.tags ?? [],
+      symptom: incident.symptom,
+      rootCause: incident.rootCause,
+      repository: incident.repository?.fullName ?? "Unknown",
+      evidence,
+      evidenceType,
+      githubUrl: incident.githubUrl ?? "",
+    };
+  });
+
+  return { results, total: results.length };
 }
 
-// ─── Scoring ──────────────────────────────────────────────────────────────────
+// ============================================================================
+// Helper Functions
+// ============================================================================
 
+/**
+ * Calculates lexical relevance using term frequency and domain field weighting.
+ * - Exact phrase match bonus: +25 points
+ * - Title keyword match: 30 points per match
+ * - Body keyword match (symptom, rootCause, resolution): 10 points per match
+ * - Tag exact keyword match: 15 points per match
+ */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function calculateMatchScore(incident: any, terms: string[]): number {
-  const titleText = incident.title.toLowerCase();
+function calculateLexicalScore(incident: any, terms: string[], fullQuery: string): number {
+  const titleText = (incident.title || "").toLowerCase();
   const bodyText = [
     incident.symptom,
     incident.rootCause,
     incident.resolution,
-    ...(incident.tags ?? []),
-    incident.commitMessage ?? "",
+    incident.commitMessage,
   ]
+    .filter(Boolean)
     .join(" ")
     .toLowerCase();
 
+  const tags = (incident.tags || []).map((t: string) => t.toLowerCase());
+
   let score = 0;
 
-  for (const term of terms) {
-    const regex = new RegExp(term, "gi");
+  // Exact phrase match bonus in title
+  if (titleText.includes(fullQuery.toLowerCase())) {
+    score += 25;
+  }
 
-    // Title match is worth more
-    const titleMatches = (titleText.match(regex) ?? []).length;
+  for (const term of terms) {
+    const escapedTerm = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const regex = new RegExp(`\\b${escapedTerm}`, "gi");
+
+    // Title matches
+    const titleMatches = (titleText.match(regex) || []).length;
     score += titleMatches * 30;
 
     // Body matches
-    const bodyMatches = (bodyText.match(regex) ?? []).length;
+    const bodyMatches = (bodyText.match(regex) || []).length;
     score += bodyMatches * 10;
 
-    // Tags exact match bonus
-    if ((incident.tags ?? []).some((t: string) =>
-      t.toLowerCase().includes(term)
-    )) {
+    // Tags matches
+    if (tags.some((t: string) => t.includes(term))) {
       score += 15;
     }
   }
 
-  // Normalize to 0–100
   return Math.min(Math.round(score), 100);
+}
+
+/**
+ * Retrieves cached incident embedding or generates and caches a new one.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function getOrComputeIncidentEmbedding(incident: any): Promise<number[]> {
+  const cached = incidentEmbeddingCache.get(incident.id);
+  if (cached && cached.updatedAt.getTime() === incident.updatedAt.getTime()) {
+    return cached.vector;
+  }
+
+  // Combine title, symptom, root cause, resolution, and tags into a unified semantic document
+  const textToEmbed = [
+    incident.title,
+    incident.symptom ? `Symptom: ${incident.symptom}` : "",
+    incident.rootCause ? `Root Cause: ${incident.rootCause}` : "",
+    incident.resolution ? `Resolution: ${incident.resolution}` : "",
+    incident.tags?.length ? `Tags: ${incident.tags.join(", ")}` : "",
+  ]
+    .filter(Boolean)
+    .join(". ");
+
+  const vector = await generateEmbedding(textToEmbed);
+  incidentEmbeddingCache.set(incident.id, {
+    updatedAt: incident.updatedAt,
+    vector,
+  });
+
+  return vector;
 }

@@ -4,6 +4,7 @@ import {
   Building2,
   Check,
   ChevronsUpDown,
+  GitBranch,
   LogOut,
   Plus,
   Search,
@@ -11,7 +12,16 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { authApi, User, workspacesApi, Workspace } from "@/lib/api";
+import {
+  authApi,
+  User,
+  workspacesApi,
+  Workspace,
+  repositoriesApi,
+  Repository,
+  getSelectedRepo,
+  setSelectedRepo,
+} from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -39,6 +49,8 @@ export function TopBar({ title }: TopBarProps) {
   const navigate = useNavigate();
   const [user, setUser] = useState<User | null>(null);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [repositories, setRepositories] = useState<Repository[]>([]);
+  const [selectedRepo, setSelectedRepoState] = useState<string>("All");
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [newWsName, setNewWsName] = useState("");
   const [creating, setCreating] = useState(false);
@@ -47,6 +59,15 @@ export function TopBar({ title }: TopBarProps) {
     try {
       const res = await workspacesApi.list();
       setWorkspaces(res.workspaces);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const loadRepositories = useCallback(async () => {
+    try {
+      const res = await repositoriesApi.list();
+      setRepositories(res.repositories);
     } catch {
       // ignore
     }
@@ -74,13 +95,33 @@ export function TopBar({ title }: TopBarProps) {
   }, []);
 
   useEffect(() => {
+    setSelectedRepoState(getSelectedRepo());
     loadUser();
     loadWorkspaces();
+    loadRepositories();
+
+    const handleRepoChange = () => {
+      setSelectedRepoState(getSelectedRepo());
+      loadRepositories();
+    };
+
     window.addEventListener("auth_change", loadUser);
+    window.addEventListener("repo_change", handleRepoChange);
     return () => {
       window.removeEventListener("auth_change", loadUser);
+      window.removeEventListener("repo_change", handleRepoChange);
     };
-  }, [loadUser, loadWorkspaces]);
+  }, [loadUser, loadWorkspaces, loadRepositories]);
+
+  const handleSelectRepo = (repoName: string) => {
+    setSelectedRepo(repoName);
+    setSelectedRepoState(repoName);
+    toast.success(
+      repoName === "All"
+        ? "Viewing all repositories"
+        : `Filtered to ${repoName}`
+    );
+  };
 
   const handleLogout = () => {
     authApi.logout();
@@ -186,6 +227,79 @@ export function TopBar({ title }: TopBarProps) {
                 >
                   <Settings className="h-3.5 w-3.5" />
                   Workspace Settings
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+
+          {/* Repository Selector Dropdown */}
+          <div className="hidden md:flex items-center">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  className="flex items-center gap-2 rounded-md border border-border/80 bg-card/60 px-2.5 py-1 text-xs text-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                >
+                  <GitBranch className="h-3.5 w-3.5 text-primary" />
+                  <span className="max-w-[160px] truncate font-medium">
+                    {selectedRepo === "All" ? "All Repositories" : selectedRepo}
+                  </span>
+                  <ChevronsUpDown className="h-3 w-3 text-muted-foreground" />
+                </button>
+              </DropdownMenuTrigger>
+
+              <DropdownMenuContent align="start" className="w-60">
+                <DropdownMenuLabel className="text-[11px] text-muted-foreground font-normal">
+                  Repository Scope
+                </DropdownMenuLabel>
+                <DropdownMenuItem
+                  onClick={() => handleSelectRepo("All")}
+                  className="flex items-center justify-between text-xs cursor-pointer"
+                >
+                  <span className="font-medium">All Repositories</span>
+                  {selectedRepo === "All" && (
+                    <Check className="h-3.5 w-3.5 text-primary shrink-0 ml-2" />
+                  )}
+                </DropdownMenuItem>
+
+                <DropdownMenuSeparator />
+
+                <DropdownMenuLabel className="text-[11px] text-muted-foreground font-normal">
+                  Connected Repositories ({repositories.length})
+                </DropdownMenuLabel>
+                {repositories.length === 0 ? (
+                  <div className="px-2 py-1.5 text-[11px] text-muted-foreground italic">
+                    No repositories connected
+                  </div>
+                ) : (
+                  repositories.map((repo) => {
+                    const repoName = repo.fullName || repo.name;
+                    return (
+                      <DropdownMenuItem
+                        key={repo.id}
+                        onClick={() => handleSelectRepo(repoName)}
+                        className="flex items-center justify-between text-xs cursor-pointer"
+                      >
+                        <div className="flex items-center gap-2 truncate">
+                          <GitBranch className="h-3 w-3 text-muted-foreground shrink-0" />
+                          <span className="truncate font-medium">{repoName}</span>
+                        </div>
+                        {selectedRepo === repoName && (
+                          <Check className="h-3.5 w-3.5 text-primary shrink-0 ml-2" />
+                        )}
+                      </DropdownMenuItem>
+                    );
+                  })
+                )}
+
+                <DropdownMenuSeparator />
+
+                <DropdownMenuItem
+                  onClick={() => navigate({ to: "/repositories" })}
+                  className="flex items-center gap-2 text-xs cursor-pointer text-primary"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  Manage Repositories
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
